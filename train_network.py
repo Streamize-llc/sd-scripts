@@ -380,6 +380,7 @@ class NetworkTrainer:
         is_train=True,
         train_text_encoder=True,
         train_unet=True,
+        global_step=None
     ) -> torch.Tensor:
         """
         Process a batch for the network
@@ -458,6 +459,7 @@ class NetworkTrainer:
             weight_dtype,
             train_unet,
             is_train=is_train,
+            global_step=global_step
         )
 
         huber_c = train_util.get_huber_threshold_if_needed(args, timesteps, noise_scheduler)
@@ -1416,6 +1418,7 @@ class NetworkTrainer:
                         is_train=True,
                         train_text_encoder=train_text_encoder,
                         train_unet=train_unet,
+                        global_step=global_step
                     )
 
                     accelerator.backward(loss)
@@ -1543,7 +1546,7 @@ class NetworkTrainer:
                                 tokenize_strategy,
                                 is_train=False,
                                 train_text_encoder=train_text_encoder,  # this is needed for validation because Text Encoders must be called if train_text_encoder is True
-                                train_unet=train_unet,
+                                train_unet=train_unet
                             )
 
                             current_loss = loss.detach().item()

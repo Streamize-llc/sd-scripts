@@ -408,11 +408,26 @@ def compute_loss_weighting_for_sd3(weighting_scheme: str, sigmas=None):
 
 
 def get_noisy_model_input_and_timesteps(
-    args, noise_scheduler, latents: torch.Tensor, noise: torch.Tensor, device, dtype
+    args, noise_scheduler, latents: torch.Tensor, noise: torch.Tensor, device, dtype, global_step
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     bsz, _, h, w = latents.shape
     assert bsz > 0, "Batch size not large enough"
     num_timesteps = noise_scheduler.config.num_train_timesteps
+
+    if hasattr(args, "timestep_se_steps") and args.timestep_se_steps is not None:
+        if global_step < args.timestep_se_steps:
+            ratio = global_step / args.timestep_se_steps
+            current_shift = (1 - ratio) * args.discrete_flow_shift + ratio * args.timestep_e_shift
+        else:
+            current_shift = args.timestep_e_shift
+    else:
+        # No dynamic shift; use the fixed shift.
+        current_shift = args.discrete_flow_shift
+    
+    logger.info(f"step: {global_step}, current_shift: {current_shift}")
+    noise_scheduler.config.shift = current_shift
+    noise_scheduler.set_timesteps(num_inference_steps=1000, device=device)
+
     if args.timestep_sampling == "uniform" or args.timestep_sampling == "sigmoid":
         # Simple random sigma-based noise sampling
         if args.timestep_sampling == "sigmoid":
@@ -612,6 +627,18 @@ def add_flux_train_arguments(parser: argparse.ArgumentParser):
         "raw (use as is), additive (add to noisy input), sigma_scaled (apply sigma scaling)."
         " / モデル予測の解釈と処理方法："
         "raw（そのまま使用）、additive（ノイズ入力に加算）、sigma_scaled（シグマスケーリングを適用）。",
+    )
+    parser.add_argument(
+        "--timestep_e_shift",
+        type=float,
+        default=None,
+        help="Shift for the timestep sampling, default is None. / タイムステップサンプリングのシフト、デフォルトはNone。",
+    )
+    parser.add_argument(
+        "--timestep_se_steps",
+        type=int,
+        default=None,
+        help="Number of steps for the timestep sampling, default is None. / タイムステップサンプリングのステップ数、デフォルトはNone。",
     )
     parser.add_argument(
         "--discrete_flow_shift",

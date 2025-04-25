@@ -347,6 +347,7 @@ class FluxNetworkTrainer(train_network.NetworkTrainer):
         weight_dtype,
         train_unet,
         is_train=True,
+        global_step=None
     ):
         # Sample noise that we'll add to the latents
         noise = torch.randn_like(latents)
@@ -354,7 +355,7 @@ class FluxNetworkTrainer(train_network.NetworkTrainer):
 
         # get noisy model input and timesteps
         noisy_model_input, timesteps, sigmas = flux_train_utils.get_noisy_model_input_and_timesteps(
-            args, noise_scheduler, latents, noise, accelerator.device, weight_dtype
+            args, noise_scheduler, latents, noise, accelerator.device, weight_dtype, global_step
         )
 
         # pack latents and get img_ids
