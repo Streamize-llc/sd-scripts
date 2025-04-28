@@ -453,8 +453,8 @@ def get_noisy_model_input_and_timesteps(
             sigmas = torch.sigmoid(args.sigmoid_scale * torch.randn((bsz,), device=device))
         else:
             sigmas = torch.rand((bsz,), device=device)
-        shifted_sigmas = current_shift * sigmas / (1.0 + (current_shift - 1.0) * sigmas)
-        timesteps = shifted_sigmas * num_timesteps
+        sigmas = (sigmas * current_shift) / (1 + (current_shift - 1) * sigmas)
+        timesteps = sigmas * num_timesteps
     elif args.timestep_sampling == "shift":
         shift = args.discrete_flow_shift
         sigmas = torch.randn(bsz, device=device)
