@@ -442,6 +442,8 @@ def get_noisy_model_input_and_timesteps(
         timesteps = noise_scheduler.timesteps[indices].to(device=device, dtype=dtype)
         scheduler_sigmas = noise_scheduler.sigmas[indices].to(device=device, dtype=dtype)
         sigmas = scheduler_sigmas.view(-1, 1, 1, 1)
+
+        logger.info(f"sigmas: {sigmas}")
         
         # timesteps = sigmas_shifted * num_timesteps
         # timesteps = sigmas * num_timesteps
