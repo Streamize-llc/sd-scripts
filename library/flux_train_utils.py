@@ -406,6 +406,19 @@ def compute_loss_weighting_for_sd3(weighting_scheme: str, sigmas=None):
         weighting = torch.ones_like(sigmas)
     return weighting
 
+def sample_face_timesteps(bsz, num_timesteps=1000, p_low=0.7, device="cuda"):
+    # 30% 구간 → 0 ~ 75 (세밀한 얼굴 디테일)
+    low_end = 0
+    low_start = int(0.3 * num_timesteps)  # 75
+    # 30%~100% 구간 → 175 ~ 250 (큰 변화 학습)
+    high_start = int(0.7 * num_timesteps) # 175
+    high_end = num_timesteps              # 250
+
+    # 배치별로 로우/하이 선택
+    mask = torch.rand(bsz, device=device) < p_low
+    lows  = torch.randint(low_end,  low_start,  (bsz,), device=device)
+    highs = torch.randint(high_start, high_end, (bsz,), device=device)
+    return torch.where(mask, lows, highs).float()
 
 def get_noisy_model_input_and_timesteps(
     args, noise_scheduler, latents: torch.Tensor, noise: torch.Tensor, device, dtype, global_step
@@ -451,6 +464,9 @@ def get_noisy_model_input_and_timesteps(
         mu = get_lin_function(y1=0.5, y2=1.15)((h // 2) * (w // 2)) # we are pre-packed so must adjust for packed size 
         sigmas = time_shift(mu, 1.0, sigmas)
         timesteps = sigmas * num_timesteps
+    elif args.timestep_sampling == "face":
+        timesteps = sample_face_timesteps(bsz, num_timesteps=noise_scheduler.config.num_train_timesteps, p_low=0.7, device=device)
+        sigmas    = get_sigmas(noise_scheduler, timesteps, device, n_dim=latents.ndim, dtype=dtype).view(bsz,1,1,1)
     else:
         # Sample a random timestep for each image
         # for weighting schemes where we sample timesteps non-uniformly
@@ -608,7 +624,7 @@ def add_flux_train_arguments(parser: argparse.ArgumentParser):
 
     parser.add_argument(
         "--timestep_sampling",
-        choices=["sigma", "uniform", "sigmoid", "shift", "flux_shift"],
+        choices=["sigma", "uniform", "sigmoid", "shift", "flux_shift", "face"],
         default="sigma",
         help="Method to sample timesteps: sigma-based, uniform random, sigmoid of random normal, shift of sigmoid and FLUX.1 shifting."
         " / タイムステップをサンプリングする方法：sigma、random uniform、random normalのsigmoid、sigmoidのシフト、FLUX.1のシフト。",
