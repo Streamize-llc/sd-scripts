@@ -471,7 +471,7 @@ def get_noisy_model_input_and_timesteps(
         timesteps = sigmas * num_timesteps
     elif args.timestep_sampling == "face":
         scheduler_ts = noise_scheduler.timesteps.to(device)
-        timesteps    = sample_face_timesteps(bsz, scheduler_ts, p_low=0.7, device=device)
+        timesteps    = sample_face_timesteps(bsz, scheduler_ts, p_low=0.5, device=device)
         sigmas       = get_sigmas(noise_scheduler, timesteps, device, n_dim=latents.ndim, dtype=dtype).view(bsz,1,1,1)
     else:
         # Sample a random timestep for each image
