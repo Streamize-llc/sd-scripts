@@ -158,8 +158,8 @@ def create_network(
         else:
             conv_alpha = float(conv_alpha)
 
-    up_rank = kwargs.get("up_rank", 4)
-    pretrained_meta_lora_path = kwargs.get("pretrained_meta_lora_path", None)
+    up_rank = int(kwargs.pop("up_rank", 4))
+    pretrained_meta_lora_path = kwargs.pop("pretrained_meta_lora_path", None)
 
     # すごく引数が多いな ( ^ω^)･･･
     network = MetaLoRANetwork(
