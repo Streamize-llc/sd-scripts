@@ -442,203 +442,6 @@ class MetaLoRANetwork(torch.nn.Module):
         for lora in self.text_encoder_loras + self.unet_loras:
             lora.multiplier = self.multiplier
 
-    def set_enabled(self, is_enabled):
-        for lora in self.text_encoder_loras + self.unet_loras:
-            lora.enabled = is_enabled
-
-    def update_norms(self):
-        for lora in self.text_encoder_loras + self.unet_loras:
-            lora.update_norms()
-
-    def update_grad_norms(self):
-        for lora in self.text_encoder_loras + self.unet_loras:
-            lora.update_grad_norms()
-
-    def grad_norms(self) -> Tensor:
-        grad_norms = []
-        for lora in self.text_encoder_loras + self.unet_loras:
-            if hasattr(lora, "grad_norms") and lora.grad_norms is not None:
-                grad_norms.append(lora.grad_norms.mean(dim=0))
-        return torch.stack(grad_norms) if len(grad_norms) > 0 else torch.tensor([])
-
-    def weight_norms(self) -> Tensor:
-        weight_norms = []
-        for lora in self.text_encoder_loras + self.unet_loras:
-            if hasattr(lora, "weight_norms") and lora.weight_norms is not None:
-                weight_norms.append(lora.weight_norms.mean(dim=0))
-        return torch.stack(weight_norms) if len(weight_norms) > 0 else torch.tensor([])
-
-    def combined_weight_norms(self) -> Tensor:
-        combined_weight_norms = []
-        for lora in self.text_encoder_loras + self.unet_loras:
-            if hasattr(lora, "combined_weight_norms") and lora.combined_weight_norms is not None:
-                combined_weight_norms.append(lora.combined_weight_norms.mean(dim=0))
-        return torch.stack(combined_weight_norms) if len(combined_weight_norms) > 0 else torch.tensor([])
-
-
-    def load_weights(self, file):
-        if os.path.splitext(file)[1] == ".safetensors":
-            from safetensors.torch import load_file
-
-            weights_sd = load_file(file)
-        else:
-            weights_sd = torch.load(file, map_location="cpu")
-
-        info = self.load_state_dict(weights_sd, False)
-        return info
-
-    def load_state_dict(self, state_dict, strict=True):
-        # override to convert original weight to split qkv
-        if not self.split_qkv:
-            return super().load_state_dict(state_dict, strict)
-
-        # split qkv
-        for key in list(state_dict.keys()):
-            if "double" in key and "qkv" in key:
-                split_dims = [3072] * 3
-            elif "single" in key and "linear1" in key:
-                split_dims = [3072] * 3 + [12288]
-            else:
-                continue
-
-            weight = state_dict[key]
-            lora_name = key.split(".")[0]
-            if "lora_down" in key and "weight" in key:
-                # dense weight (rank*3, in_dim)
-                split_weight = torch.chunk(weight, len(split_dims), dim=0)
-                for i, split_w in enumerate(split_weight):
-                    state_dict[f"{lora_name}.lora_down.{i}.weight"] = split_w
-
-                del state_dict[key]
-                # print(f"split {key}: {weight.shape} to {[w.shape for w in split_weight]}")
-            elif "lora_up" in key and "weight" in key:
-                # sparse weight (out_dim=sum(split_dims), rank*3)
-                rank = weight.size(1) // len(split_dims)
-                i = 0
-                for j in range(len(split_dims)):
-                    state_dict[f"{lora_name}.lora_up.{j}.weight"] = weight[i : i + split_dims[j], j * rank : (j + 1) * rank]
-                    i += split_dims[j]
-                del state_dict[key]
-
-                # # check is sparse
-                # i = 0
-                # is_zero = True
-                # for j in range(len(split_dims)):
-                #     for k in range(len(split_dims)):
-                #         if j == k:
-                #             continue
-                #         is_zero = is_zero and torch.all(weight[i : i + split_dims[j], k * rank : (k + 1) * rank] == 0)
-                #     i += split_dims[j]
-                # if not is_zero:
-                #     logger.warning(f"weight is not sparse: {key}")
-                # else:
-                #     logger.info(f"weight is sparse: {key}")
-
-                # print(
-                #     f"split {key}: {weight.shape} to {[state_dict[k].shape for k in [f'{lora_name}.lora_up.{j}.weight' for j in range(len(split_dims))]]}"
-                # )
-
-            # alpha is unchanged
-
-        return super().load_state_dict(state_dict, strict)
-
-    def state_dict(self, destination=None, prefix="", keep_vars=False):
-        if not self.split_qkv:
-            return super().state_dict(destination, prefix, keep_vars)
-
-        # merge qkv
-        state_dict = super().state_dict(destination, prefix, keep_vars)
-        new_state_dict = {}
-        for key in list(state_dict.keys()):
-            if "double" in key and "qkv" in key:
-                split_dims = [3072] * 3
-            elif "single" in key and "linear1" in key:
-                split_dims = [3072] * 3 + [12288]
-            else:
-                new_state_dict[key] = state_dict[key]
-                continue
-
-            if key not in state_dict:
-                continue  # already merged
-
-            lora_name = key.split(".")[0]
-
-            # (rank, in_dim) * 3
-            down_weights = [state_dict.pop(f"{lora_name}.lora_down.{i}.weight") for i in range(len(split_dims))]
-            # (split dim, rank) * 3
-            up_weights = [state_dict.pop(f"{lora_name}.lora_up.{i}.weight") for i in range(len(split_dims))]
-
-            alpha = state_dict.pop(f"{lora_name}.alpha")
-
-            # merge down weight
-            down_weight = torch.cat(down_weights, dim=0)  # (rank, split_dim) * 3 -> (rank*3, sum of split_dim)
-
-            # merge up weight (sum of split_dim, rank*3)
-            rank = up_weights[0].size(1)
-            up_weight = torch.zeros((sum(split_dims), down_weight.size(0)), device=down_weight.device, dtype=down_weight.dtype)
-            i = 0
-            for j in range(len(split_dims)):
-                up_weight[i : i + split_dims[j], j * rank : (j + 1) * rank] = up_weights[j]
-                i += split_dims[j]
-
-            new_state_dict[f"{lora_name}.lora_down.weight"] = down_weight
-            new_state_dict[f"{lora_name}.lora_up.weight"] = up_weight
-            new_state_dict[f"{lora_name}.alpha"] = alpha
-
-            # print(
-            #     f"merged {lora_name}: {lora_name}, {[w.shape for w in down_weights]}, {[w.shape for w in up_weights]} to {down_weight.shape}, {up_weight.shape}"
-            # )
-            print(f"new key: {lora_name}.lora_down.weight, {lora_name}.lora_up.weight, {lora_name}.alpha")
-
-        return new_state_dict
-
-    def apply_to(self, text_encoders, flux, apply_text_encoder=True, apply_unet=True):
-        if apply_text_encoder:
-            logger.info(f"enable LoRA for text encoder: {len(self.text_encoder_loras)} modules")
-        else:
-            self.text_encoder_loras = []
-
-        if apply_unet:
-            logger.info(f"enable LoRA for U-Net: {len(self.unet_loras)} modules")
-        else:
-            self.unet_loras = []
-
-        for lora in self.text_encoder_loras + self.unet_loras:
-            lora.apply_to()
-            self.add_module(lora.lora_name, lora)
-
-    # マージできるかどうかを返す
-    def is_mergeable(self):
-        return True
-
-    # TODO refactor to common function with apply_to
-    def merge_to(self, text_encoders, flux, weights_sd, dtype=None, device=None):
-        apply_text_encoder = apply_unet = False
-        for key in weights_sd.keys():
-            if key.startswith(MetaLoRANetwork.LORA_PREFIX_TEXT_ENCODER_CLIP) or key.startswith(MetaLoRANetwork.LORA_PREFIX_TEXT_ENCODER_T5):
-                apply_text_encoder = True
-            elif key.startswith(MetaLoRANetwork.LORA_PREFIX_FLUX):
-                apply_unet = True
-
-        if apply_text_encoder:
-            logger.info("enable LoRA for text encoder")
-        else:
-            self.text_encoder_loras = []
-
-        if apply_unet:
-            logger.info("enable LoRA for U-Net")
-        else:
-            self.unet_loras = []
-
-        for lora in self.text_encoder_loras + self.unet_loras:
-            sd_for_lora = {}
-            for key in weights_sd.keys():
-                if key.startswith(lora.lora_name):
-                    sd_for_lora[key[len(lora.lora_name) + 1 :]] = weights_sd[key]
-            lora.merge_to(sd_for_lora, dtype, device)
-
-        logger.info(f"weights are merged")
-
     def set_loraplus_lr_ratio(self, loraplus_lr_ratio, loraplus_unet_lr_ratio, loraplus_text_encoder_lr_ratio):
         self.loraplus_lr_ratio = loraplus_lr_ratio
         self.loraplus_unet_lr_ratio = loraplus_unet_lr_ratio
@@ -647,40 +450,75 @@ class MetaLoRANetwork(torch.nn.Module):
         logger.info(f"LoRA+ UNet LR Ratio: {self.loraplus_unet_lr_ratio or self.loraplus_lr_ratio}")
         logger.info(f"LoRA+ Text Encoder LR Ratio: {self.loraplus_text_encoder_lr_ratio or self.loraplus_lr_ratio}")
 
-    def prepare_optimizer_params(self, text_encoder_lr, unet_lr):
-        # set requires_grad for all parameters
-        for lora in self.text_encoder_loras + self.unet_loras:
-            if hasattr(lora, 'lora_down'):
-                lora.lora_down.requires_grad_(False)
-            if hasattr(lora, 'lora_mid'):
-                lora.lora_mid.requires_grad_(True)
-            if hasattr(lora, 'lora_up'):
-                lora.lora_up.requires_grad_(True)
+    def prepare_optimizer_params_with_multiple_te_lrs(self, text_encoder_lr, unet_lr, default_lr):
+        if text_encoder_lr is None or (isinstance(text_encoder_lr, list) and len(text_encoder_lr) == 0):
+            text_encoder_lr = [default_lr, default_lr]
+        elif isinstance(text_encoder_lr, float) or isinstance(text_encoder_lr, int):
+            text_encoder_lr = [float(text_encoder_lr), float(text_encoder_lr)]
+        elif len(text_encoder_lr) == 1:
+            text_encoder_lr = [text_encoder_lr[0], text_encoder_lr[0]]
 
-        def get_params(loras, lr):
+        self.requires_grad_(True)
+
+        all_params = []
+        lr_descriptions = []
+
+        def assemble_params(loras, lr, loraplus_ratio):
             if lr is None:
-                return []
+                return [], []
 
-            params = []
+            param_groups = {"lora": {}, "plus": {}}
             for lora in loras:
                 if hasattr(lora, 'lora_mid') and hasattr(lora, 'lora_up'):
-                    # Filter out parameters that don't require gradients
-                    mid_params = [p for p in lora.lora_mid.parameters() if p.requires_grad]
-                    up_params = [p for p in lora.lora_up.parameters() if p.requires_grad]
+                    for name, param in lora.lora_mid.named_parameters():
+                        param_groups["lora"][f"{lora.lora_name}.mid.{name}"] = param
                     
-                    if mid_params:
-                        params.append({"params": mid_params, "lr": lr})
-                    if up_params:
-                        params.append({"params": up_params, "lr": lr})
-            return params
+                    for name, param in lora.lora_up.named_parameters():
+                        if loraplus_ratio is not None:
+                            param_groups["plus"][f"{lora.lora_name}.up.{name}"] = param
+                        else:
+                            param_groups["lora"][f"{lora.lora_name}.up.{name}"] = param
 
-        text_encoder_params = get_params(self.text_encoder_loras, text_encoder_lr)
-        unet_params = get_params(self.unet_loras, unet_lr)
-        
-        return text_encoder_params + unet_params
+            params = []
+            descriptions = []
+            for key in param_groups.keys():
+                param_data = {"params": list(param_groups[key].values())}
+                if len(param_data["params"]) == 0:
+                    continue
+                
+                final_lr = lr * loraplus_ratio if key == "plus" else lr
+                param_data["lr"] = final_lr
+                
+                params.append(param_data)
+                descriptions.append("plus" if key == "plus" else "")
+
+            return params, descriptions
+
+        if self.text_encoder_loras:
+            loraplus_lr_ratio = self.loraplus_text_encoder_lr_ratio or self.loraplus_lr_ratio
+            te1_loras = [lora for lora in self.text_encoder_loras if lora.lora_name.startswith(self.LORA_PREFIX_TEXT_ENCODER_CLIP)]
+            te3_loras = [lora for lora in self.text_encoder_loras if lora.lora_name.startswith(self.LORA_PREFIX_TEXT_ENCODER_T5)]
+            if len(te1_loras) > 0:
+                params, descriptions = assemble_params(te1_loras, text_encoder_lr[0], loraplus_lr_ratio)
+                all_params.extend(params)
+                lr_descriptions.extend(["textencoder 1 " + (" " + d if d else "") for d in descriptions])
+            if len(te3_loras) > 0:
+                params, descriptions = assemble_params(te3_loras, text_encoder_lr[1], loraplus_lr_ratio)
+                all_params.extend(params)
+                lr_descriptions.extend(["textencoder 2 " + (" " + d if d else "") for d in descriptions])
+
+        if self.unet_loras:
+            params, descriptions = assemble_params(
+                self.unet_loras,
+                unet_lr if unet_lr is not None else default_lr,
+                self.loraplus_unet_lr_ratio or self.loraplus_lr_ratio,
+            )
+            all_params.extend(params)
+            lr_descriptions.extend(["unet" + (" " + d if d else "") for d in descriptions])
+
+        return all_params, lr_descriptions
 
     def enable_gradient_checkpointing(self):
-        # not supported
         pass
 
     def prepare_grad_etc(self, text_encoder, unet):
