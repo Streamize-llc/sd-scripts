@@ -324,24 +324,12 @@ class MetaLoRANetwork(torch.nn.Module):
                 if is_flux
                 else (self.LORA_PREFIX_TEXT_ENCODER_CLIP if text_encoder_idx == 0 else self.LORA_PREFIX_TEXT_ENCODER_T5)
             )
-            
-            print(f"--- [DEBUG] Running create_modules for prefix: {prefix} ---")
-            print(f"--- [DEBUG] Target modules: {target_replace_modules}")
 
             loras = []
             skipped = []
             
-            # Add debugging for root module
-            if is_flux:
-                print(f"--- [DEBUG] UNet Root module is: {root_module.__class__.__name__}")
-
             for name, module in root_module.named_modules():
-                # This print will be very verbose, but it's necessary
-                # print(f"--- [DEBUG] Scanning module: {name} ({module.__class__.__name__})")
-                
                 if target_replace_modules is None or module.__class__.__name__ in target_replace_modules:
-                    print(f"--- [DEBUG] Found a target block: {name} ({module.__class__.__name__}) ---")
-                    
                     if target_replace_modules is None:
                         module = root_module
 
@@ -352,17 +340,13 @@ class MetaLoRANetwork(torch.nn.Module):
                             lora_name = prefix + "." + (name + "." if name else "") + child_name
                             lora_name = lora_name.replace(".", "_")
                             
-                            print(f"--- [DEBUG] Found Linear layer: {child_name} -> Generating lora_name: {lora_name}")
-
                             if filter is not None and not filter in lora_name:
-                                print(f"--- [DEBUG] Skipped by filter: {lora_name}")
                                 continue
 
                             dim = default_dim if default_dim is not None else self.lora_dim
                             
                             if dim is None or dim == 0:
                                 skipped.append(lora_name)
-                                print(f"--- [DEBUG] Skipped by dim=0: {lora_name}")
                                 continue
 
                             lora = MetaLoRAModule(
@@ -377,12 +361,9 @@ class MetaLoRANetwork(torch.nn.Module):
                                 up_rank=self.up_rank,
                             )
                             loras.append(lora)
-                            print(f"--- [DEBUG] Successfully created and added LoRA module: {lora_name}")
 
                 if target_replace_modules is None:
                     break
-            
-            print(f"--- [DEBUG] Finished create_modules for {prefix}. Found {len(loras)} modules. ---")
             return loras, skipped
 
         # create LoRA for text encoder
@@ -454,7 +435,7 @@ class MetaLoRANetwork(torch.nn.Module):
             down_key = lora.lora_name + ".lora_down.weight"
             if down_key in state_dict:
                 lora.lora_down.weight.data.copy_(state_dict[down_key])
-                print(f"Loaded pretrained weight for {lora.lora_name}")
+                # print(f"Loaded pretrained weight for {lora.lora_name}")
 
     def set_multiplier(self, multiplier):
         self.multiplier = multiplier
@@ -667,6 +648,8 @@ class MetaLoRANetwork(torch.nn.Module):
         logger.info(f"LoRA+ Text Encoder LR Ratio: {self.loraplus_text_encoder_lr_ratio or self.loraplus_lr_ratio}")
 
     def prepare_optimizer_params(self, text_encoder_lr, unet_lr):
+        print(f"--- [DEBUG] prepare_optimizer_params: num unet loras = {len(self.unet_loras)}")
+        
         def get_params(loras, lr):
             if lr is None:
                 return []
@@ -683,6 +666,7 @@ class MetaLoRANetwork(torch.nn.Module):
         text_encoder_params = get_params(self.text_encoder_loras, text_encoder_lr)
         unet_params = get_params(self.unet_loras, unet_lr)
         
+        print(f"--- [DEBUG] prepare_optimizer_params: generated {len(unet_params)} unet param groups")
         return text_encoder_params + unet_params
 
     def enable_gradient_checkpointing(self):
