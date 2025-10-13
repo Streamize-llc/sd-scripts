@@ -324,31 +324,45 @@ class MetaLoRANetwork(torch.nn.Module):
                 if is_flux
                 else (self.LORA_PREFIX_TEXT_ENCODER_CLIP if text_encoder_idx == 0 else self.LORA_PREFIX_TEXT_ENCODER_T5)
             )
+            
+            print(f"--- [DEBUG] Running create_modules for prefix: {prefix} ---")
+            print(f"--- [DEBUG] Target modules: {target_replace_modules}")
 
             loras = []
             skipped = []
+            
+            # Add debugging for root module
+            if is_flux:
+                print(f"--- [DEBUG] UNet Root module is: {root_module.__class__.__name__}")
+
             for name, module in root_module.named_modules():
+                # This print will be very verbose, but it's necessary
+                # print(f"--- [DEBUG] Scanning module: {name} ({module.__class__.__name__})")
+                
                 if target_replace_modules is None or module.__class__.__name__ in target_replace_modules:
-                    if target_replace_modules is None:  # dirty hack for all modules
-                        module = root_module  # search all modules
+                    print(f"--- [DEBUG] Found a target block: {name} ({module.__class__.__name__}) ---")
+                    
+                    if target_replace_modules is None:
+                        module = root_module
 
                     for child_name, child_module in module.named_modules():
                         is_linear = child_module.__class__.__name__ == "Linear"
-                        is_conv2d = child_module.__class__.__name__ == "Conv2d"
-                        is_conv2d_1x1 = is_conv2d and child_module.kernel_size == (1, 1)
-
-                        if is_linear or is_conv2d:
+                        
+                        if is_linear:
                             lora_name = prefix + "." + (name + "." if name else "") + child_name
                             lora_name = lora_name.replace(".", "_")
+                            
+                            print(f"--- [DEBUG] Found Linear layer: {child_name} -> Generating lora_name: {lora_name}")
 
                             if filter is not None and not filter in lora_name:
+                                print(f"--- [DEBUG] Skipped by filter: {lora_name}")
                                 continue
 
                             dim = default_dim if default_dim is not None else self.lora_dim
                             
                             if dim is None or dim == 0:
-                                if is_linear or is_conv2d_1x1 or (self.conv_lora_dim is not None):
-                                    skipped.append(lora_name)
+                                skipped.append(lora_name)
+                                print(f"--- [DEBUG] Skipped by dim=0: {lora_name}")
                                 continue
 
                             lora = MetaLoRAModule(
@@ -363,9 +377,12 @@ class MetaLoRANetwork(torch.nn.Module):
                                 up_rank=self.up_rank,
                             )
                             loras.append(lora)
+                            print(f"--- [DEBUG] Successfully created and added LoRA module: {lora_name}")
 
                 if target_replace_modules is None:
-                    break  # all modules are searched
+                    break
+            
+            print(f"--- [DEBUG] Finished create_modules for {prefix}. Found {len(loras)} modules. ---")
             return loras, skipped
 
         # create LoRA for text encoder
