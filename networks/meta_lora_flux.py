@@ -165,6 +165,10 @@ def create_network(
 
     up_rank = int(kwargs.pop("up_rank", 4))
     pretrained_meta_lora_path = kwargs.pop("pretrained_meta_lora_path", None)
+    # pop dropout related args
+    kwargs.pop("dropout", None)
+    kwargs.pop("rank_dropout", None)
+    kwargs.pop("module_dropout", None)
 
     print(f"--- DEBUG: up_rank after pop: {up_rank}")
     print(f"--- DEBUG: pretrained_meta_lora_path after pop: {pretrained_meta_lora_path}")
