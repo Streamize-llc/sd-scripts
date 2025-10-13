@@ -170,6 +170,10 @@ def create_network(
     kwargs.pop("rank_dropout", None)
     kwargs.pop("module_dropout", None)
 
+    train_t5xxl = kwargs.pop("train_t5xxl", False)
+    if train_t5xxl is not None:
+        train_t5xxl = True if str(train_t5xxl).lower() == "true" else False
+
     print(f"--- DEBUG: up_rank after pop: {up_rank}")
     print(f"--- DEBUG: pretrained_meta_lora_path after pop: {pretrained_meta_lora_path}")
     print("--- DEBUG: kwargs after pop ---")
@@ -185,6 +189,7 @@ def create_network(
         dropout=neuron_dropout,
         up_rank=up_rank,
         pretrained_meta_lora_path=pretrained_meta_lora_path,
+        train_t5xxl=train_t5xxl,
         **kwargs,
     )
 
@@ -278,6 +283,7 @@ class MetaLoRANetwork(torch.nn.Module):
         module_dropout: Optional[float] = None,
         up_rank: int = 4,
         pretrained_meta_lora_path: str = None,
+        train_t5xxl: bool = False,
         **kwargs,
     ) -> None:
         super().__init__()
@@ -288,6 +294,7 @@ class MetaLoRANetwork(torch.nn.Module):
         self.rank_dropout = rank_dropout
         self.module_dropout = module_dropout
         self.up_rank = up_rank
+        self.train_t5xxl = train_t5xxl
 
         logger.info(f"create MetaLoRA network. base dim (rank): {lora_dim}, up_rank: {up_rank}, alpha: {alpha}")
 
