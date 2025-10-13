@@ -648,8 +648,15 @@ class MetaLoRANetwork(torch.nn.Module):
         logger.info(f"LoRA+ Text Encoder LR Ratio: {self.loraplus_text_encoder_lr_ratio or self.loraplus_lr_ratio}")
 
     def prepare_optimizer_params(self, text_encoder_lr, unet_lr):
-        print(f"--- [DEBUG] prepare_optimizer_params: num unet loras = {len(self.unet_loras)}")
-        
+        # set requires_grad for all parameters
+        for lora in self.text_encoder_loras + self.unet_loras:
+            if hasattr(lora, 'lora_down'):
+                lora.lora_down.requires_grad_(False)
+            if hasattr(lora, 'lora_mid'):
+                lora.lora_mid.requires_grad_(True)
+            if hasattr(lora, 'lora_up'):
+                lora.lora_up.requires_grad_(True)
+
         def get_params(loras, lr):
             if lr is None:
                 return []
@@ -657,16 +664,19 @@ class MetaLoRANetwork(torch.nn.Module):
             params = []
             for lora in loras:
                 if hasattr(lora, 'lora_mid') and hasattr(lora, 'lora_up'):
-                    params.extend([
-                        {"params": list(lora.lora_mid.parameters()), "lr": lr},
-                        {"params": list(lora.lora_up.parameters()), "lr": lr},
-                    ])
+                    # Filter out parameters that don't require gradients
+                    mid_params = [p for p in lora.lora_mid.parameters() if p.requires_grad]
+                    up_params = [p for p in lora.lora_up.parameters() if p.requires_grad]
+                    
+                    if mid_params:
+                        params.append({"params": mid_params, "lr": lr})
+                    if up_params:
+                        params.append({"params": up_params, "lr": lr})
             return params
 
         text_encoder_params = get_params(self.text_encoder_loras, text_encoder_lr)
         unet_params = get_params(self.unet_loras, unet_lr)
         
-        print(f"--- [DEBUG] prepare_optimizer_params: generated {len(unet_params)} unet param groups")
         return text_encoder_params + unet_params
 
     def enable_gradient_checkpointing(self):
