@@ -538,6 +538,20 @@ def setup_parser() -> argparse.ArgumentParser:
     train_util.add_dit_training_arguments(parser)
     flux_train_utils.add_flux_train_arguments(parser)
 
+    # MetaLoRA arguments
+    parser.add_argument(
+        "--network_up_rank",
+        type=int,
+        default=4,
+        help="Up rank for MetaLoRA / MetaLoRAのup rank",
+    )
+    parser.add_argument(
+        "--pretrained_meta_lora_path",
+        type=str,
+        default=None,
+        help="Path to pretrained MetaLoRA weights / 사전 학습된 MetaLoRA 가중치 경로",
+    )
+
     parser.add_argument(
         "--split_mode",
         action="store_true",
@@ -554,6 +568,15 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
     train_util.verify_command_line_training_args(args)
+
+    # Add meta_lora args to network_args
+    if "meta_lora" in args.network_module:
+        if args.network_args is None:
+            args.network_args = []
+        args.network_args.append(f"up_rank={args.network_up_rank}")
+        if args.pretrained_meta_lora_path:
+            args.network_args.append(f"pretrained_meta_lora_path={args.pretrained_meta_lora_path}")
+
     args = train_util.read_config_from_file(args, parser)
 
     trainer = FluxNetworkTrainer()
