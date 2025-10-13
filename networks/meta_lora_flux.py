@@ -2,6 +2,8 @@
 # FLUX doesn't have Conv2d, so we ignore it
 # TODO commonize with the original implementation
 
+print("--- RUNNING MODIFIED META LORA FLUX SCRIPT (v2) ---")
+
 # LoRA network module
 # reference:
 # https://github.com/microsoft/LoRA/blob/main/loralib/layers.py
@@ -158,8 +160,16 @@ def create_network(
         else:
             conv_alpha = float(conv_alpha)
 
+    print("--- DEBUG: kwargs before pop ---")
+    print(kwargs)
+
     up_rank = int(kwargs.pop("up_rank", 4))
     pretrained_meta_lora_path = kwargs.pop("pretrained_meta_lora_path", None)
+
+    print(f"--- DEBUG: up_rank after pop: {up_rank}")
+    print(f"--- DEBUG: pretrained_meta_lora_path after pop: {pretrained_meta_lora_path}")
+    print("--- DEBUG: kwargs after pop ---")
+    print(kwargs)
 
     # すごく引数が多いな ( ^ω^)･･･
     network = MetaLoRANetwork(
