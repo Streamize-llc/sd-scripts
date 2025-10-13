@@ -295,52 +295,120 @@ class MetaLoRANetwork(torch.nn.Module):
         self.module_dropout = module_dropout
         self.up_rank = up_rank
         self.train_t5xxl = train_t5xxl
+        
+        # Original lora_flux arguments
+        self.conv_lora_dim = kwargs.get("conv_dim", None)
+        self.conv_alpha = kwargs.get("conv_alpha", None)
+        self.train_blocks = kwargs.get("train_blocks", "all")
+        self.split_qkv = kwargs.get("split_qkv", False)
+        self.type_dims = kwargs.get("type_dims", None)
+        self.in_dims = kwargs.get("in_dims", None)
+        self.train_double_block_indices = kwargs.get("train_double_block_indices", None)
+        self.train_single_block_indices = kwargs.get("train_single_block_indices", None)
+        self.verbose = kwargs.get("verbose", False)
+
 
         logger.info(f"create MetaLoRA network. base dim (rank): {lora_dim}, up_rank: {up_rank}, alpha: {alpha}")
 
         # create module instances
         def create_modules(
+            is_flux: bool,
+            text_encoder_idx: Optional[int],
             root_module: torch.nn.Module,
             target_replace_modules: List[str],
-            prefix: str,
+            filter: Optional[str] = None,
+            default_dim: Optional[int] = None,
         ) -> List[MetaLoRAModule]:
+            prefix = (
+                self.LORA_PREFIX_FLUX
+                if is_flux
+                else (self.LORA_PREFIX_TEXT_ENCODER_CLIP if text_encoder_idx == 0 else self.LORA_PREFIX_TEXT_ENCODER_T5)
+            )
+
             loras = []
+            skipped = []
             for name, module in root_module.named_modules():
-                if module.__class__.__name__ in target_replace_modules:
+                if target_replace_modules is None or module.__class__.__name__ in target_replace_modules:
+                    if target_replace_modules is None:  # dirty hack for all modules
+                        module = root_module  # search all modules
+
                     for child_name, child_module in module.named_modules():
-                        if child_module.__class__.__name__ == "Linear":
-                            lora_name = prefix + "." + name + "." + child_name
+                        is_linear = child_module.__class__.__name__ == "Linear"
+                        is_conv2d = child_module.__class__.__name__ == "Conv2d"
+                        is_conv2d_1x1 = is_conv2d and child_module.kernel_size == (1, 1)
+
+                        if is_linear or is_conv2d:
+                            lora_name = prefix + "." + (name + "." if name else "") + child_name
                             lora_name = lora_name.replace(".", "_")
+
+                            if filter is not None and not filter in lora_name:
+                                continue
+
+                            dim = default_dim if default_dim is not None else self.lora_dim
+                            
+                            if dim is None or dim == 0:
+                                if is_linear or is_conv2d_1x1 or (self.conv_lora_dim is not None):
+                                    skipped.append(lora_name)
+                                continue
 
                             lora = MetaLoRAModule(
                                 lora_name,
                                 child_module,
                                 self.multiplier,
-                                lora_dim,
-                                alpha,
-                                dropout=dropout,
-                                rank_dropout=rank_dropout,
-                                module_dropout=module_dropout,
+                                dim,
+                                self.alpha,
+                                dropout=self.dropout,
+                                rank_dropout=self.rank_dropout,
+                                module_dropout=self.module_dropout,
                                 up_rank=self.up_rank,
                             )
                             loras.append(lora)
-            return loras
+
+                if target_replace_modules is None:
+                    break  # all modules are searched
+            return loras, skipped
 
         # create LoRA for text encoder
         self.text_encoder_loras: List[MetaLoRAModule] = []
+        skipped_te = []
         for i, text_encoder in enumerate(text_encoders):
-            prefix = self.LORA_PREFIX_TEXT_ENCODER_CLIP if i == 0 else self.LORA_PREFIX_TEXT_ENCODER_T5
-            self.text_encoder_loras.extend(
-                create_modules(text_encoder, self.TEXT_ENCODER_TARGET_REPLACE_MODULE, prefix)
-            )
-        
-        logger.info(f"create LoRA for text encoders: {len(self.text_encoder_loras)} modules.")
+            index = i
+            if not self.train_t5xxl and index > 0:
+                break
+
+            logger.info(f"create LoRA for Text Encoder {index+1}:")
+            text_encoder_loras, skipped = create_modules(False, index, text_encoder, self.TEXT_ENCODER_TARGET_REPLACE_MODULE)
+            logger.info(f"create LoRA for Text Encoder {index+1}: {len(text_encoder_loras)} modules.")
+            self.text_encoder_loras.extend(text_encoder_loras)
+            skipped_te += skipped
 
         # create LoRA for U-Net
-        self.unet_loras: List[MetaLoRAModule] = create_modules(
-            unet, self.FLUX_TARGET_REPLACE_MODULE_DOUBLE + self.FLUX_TARGET_REPLACE_MODULE_SINGLE, self.LORA_PREFIX_FLUX
-        )
-        logger.info(f"create LoRA for U-Net: {len(self.unet_loras)} modules.")
+        if self.train_blocks == "all":
+            target_replace_modules = self.FLUX_TARGET_REPLACE_MODULE_DOUBLE + self.FLUX_TARGET_REPLACE_MODULE_SINGLE
+        elif self.train_blocks == "single":
+            target_replace_modules = self.FLUX_TARGET_REPLACE_MODULE_SINGLE
+        elif self.train_blocks == "double":
+            target_replace_modules = self.FLUX_TARGET_REPLACE_MODULE_DOUBLE
+        else:
+            target_replace_modules = []
+
+        self.unet_loras: List[MetaLoRAModule]
+        self.unet_loras, skipped_un = create_modules(True, None, unet, target_replace_modules)
+
+        if self.in_dims:
+            for filter, in_dim in zip(["_img_in", "_time_in", "_vector_in", "_guidance_in", "_txt_in"], self.in_dims):
+                loras, _ = create_modules(True, None, unet, None, filter=filter, default_dim=in_dim)
+                self.unet_loras.extend(loras)
+
+        logger.info(f"create LoRA for FLUX {self.train_blocks} blocks: {len(self.unet_loras)} modules.")
+        
+        skipped = skipped_te + skipped_un
+        if self.verbose and len(skipped) > 0:
+            logger.warning(
+                f"because dim (rank) is 0, {len(skipped)} LoRA modules are skipped"
+            )
+            for name in skipped:
+                logger.info(f"\t{name}")
 
         # assertion
         names = set()
@@ -354,7 +422,8 @@ class MetaLoRANetwork(torch.nn.Module):
 
         # Freeze lora_down
         for lora in self.text_encoder_loras + self.unet_loras:
-            lora.lora_down.requires_grad_(False)
+            if hasattr(lora, 'lora_down'):
+                lora.lora_down.requires_grad_(False)
             
     def load_pretrained_weights(self, path):
         if not os.path.exists(path):
@@ -368,9 +437,12 @@ class MetaLoRANetwork(torch.nn.Module):
             down_key = lora.lora_name + ".lora_down.weight"
             if down_key in state_dict:
                 lora.lora_down.weight.data.copy_(state_dict[down_key])
+                print(f"Loaded pretrained weight for {lora.lora_name}")
 
     def set_multiplier(self, multiplier):
         self.multiplier = multiplier
+        for lora in self.text_encoder_loras + self.unet_loras:
+            lora.multiplier = self.multiplier
 
     def set_enabled(self, is_enabled):
         for lora in self.text_encoder_loras + self.unet_loras:
@@ -584,10 +656,11 @@ class MetaLoRANetwork(torch.nn.Module):
 
             params = []
             for lora in loras:
-                params.extend([
-                    {"params": list(lora.lora_mid.parameters()), "lr": lr},
-                    {"params": list(lora.lora_up.parameters()), "lr": lr},
-                ])
+                if hasattr(lora, 'lora_mid') and hasattr(lora, 'lora_up'):
+                    params.extend([
+                        {"params": list(lora.lora_mid.parameters()), "lr": lr},
+                        {"params": list(lora.lora_up.parameters()), "lr": lr},
+                    ])
             return params
 
         text_encoder_params = get_params(self.text_encoder_loras, text_encoder_lr)
