@@ -579,6 +579,9 @@ class MetaLoRANetwork(torch.nn.Module):
 
     def prepare_optimizer_params(self, text_encoder_lr, unet_lr):
         def get_params(loras, lr):
+            if lr is None:
+                return []
+
             params = []
             for lora in loras:
                 params.extend([
