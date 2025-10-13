@@ -582,8 +582,8 @@ class MetaLoRANetwork(torch.nn.Module):
             params = []
             for lora in loras:
                 params.extend([
-                    {"params": lora.lora_mid.parameters(), "lr": lr},
-                    {"params": lora.lora_up.parameters(), "lr": lr},
+                    {"params": list(lora.lora_mid.parameters()), "lr": lr},
+                    {"params": list(lora.lora_up.parameters()), "lr": lr},
                 ])
             return params
 
